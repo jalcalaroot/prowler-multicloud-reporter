@@ -1,0 +1,300 @@
+name: multi-cloud-scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      use_sample_data:
+        description: "Use sample-data/ instead of running a live Prowler scan"
+        type: boolean
+        default: true
+      cloud:
+        description: "Which cloud(s) to scan -- 'both' merges all configured clouds into one report, so its compliance chips show every matched framework together (expected for a real multi-cloud run, not a bug)."
+        type: choice
+        options: [both, aws, azure, gcp]
+        default: both
+  # schedule:
+  #   - cron: "0 6 * * 1"   # uncomment once real cloud auth (below) is wired up
+
+permissions:
+  id-token: write   # OIDC to AWS/Azure/GCP -- no static cloud secrets
+  contents: read
+
+jobs:
+  scan:
+    strategy:
+      fail-fast: false # one cloud's scan failing (e.g. not set up yet) shouldn't cancel the others
+      matrix:
+        cloud: ${{ fromJSON(inputs.cloud == 'both' && '["aws","azure","gcp"]' || format('["{0}"]', inputs.cloud)) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # AWS leg: assumes the role created by infra/aws (SecurityAudit +
+      # ViewOnlyAccess -- never AdministratorAccess). Set the AWS_ROLE_ARN
+      # repo variable to its `role_arn` output (see infra/aws/README.md) to
+      # enable this.
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        if: ${{ inputs.use_sample_data == false && matrix.cloud == 'aws' }}
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      # Azure leg: federates the managed identity created by infra/azure (Reader
+      # role on the subscription). azure/login's OIDC exchange populates the
+      # runner's Azure CLI cache (~/.azure) -- Prowler reads that directly via
+      # --az-cli-auth, it doesn't need its own env-var credentials.
+      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        if: ${{ inputs.use_sample_data == false && matrix.cloud == 'azure' }}
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # GCP leg: exchanges this run's OIDC token for short-lived credentials
+      # via the Workload Identity Pool created by infra/gcp -- no service
+      # account key ever downloaded. Populates GOOGLE_APPLICATION_CREDENTIALS
+      # on the runner (a short-lived credential config file, not a key) for
+      # Prowler's google-auth-based default-credentials lookup to pick up.
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        if: ${{ inputs.use_sample_data == false && matrix.cloud == 'gcp' }}
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Run Prowler (live)
+        if: ${{ inputs.use_sample_data == false }}
+        run: |
+          # Confirmed against a real scan (2026-09-05): the
+          # image is prowlercloud/prowler (not the older toniblyx/prowler), and the
+          # default export mode is json-ocsf -- Prowler writes the file as
+          # <filename>.ocsf.json, renamed below to the plain name normalize_findings.py
+          # and the sample-data step both expect.
+          #
+          # Confirmed for real on 2026-09-07: the image runs as a non-root
+          # user, which can't mkdir inside a bind-mounted host directory
+          # owned by the runner's own user (PermissionError on /output/compliance)
+          # -- world-writable on this ephemeral runner is harmless, chmod before mounting.
+          #
+          # Prowler's own exit code is nonzero (3) whenever it finds at least
+          # one FAILed check -- expected on any real account, not a scan
+          # error -- so `|| true` here and let the `mv` below fail loudly
+          # (missing file) if the scan genuinely didn't produce output.
+          mkdir -p reports
+          chmod 777 reports
+          if [ "${{ matrix.cloud }}" = "aws" ]; then
+            # configure-aws-credentials exports creds as env vars (no ~/.aws
+            # file on the runner) -- pass them through explicitly.
+            docker run --rm \
+              -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION \
+              -v "$PWD/reports:/output" \
+              prowlercloud/prowler:latest aws \
+              --output-modes json-ocsf --output-directory /output --output-filename aws-findings || true
+          elif [ "${{ matrix.cloud }}" = "gcp" ]; then
+            # google-github-actions/auth exports GOOGLE_APPLICATION_CREDENTIALS
+            # pointing to a short-lived credential *config* file (not a key)
+            # on the runner -- mount it into the container and repoint the
+            # env var at the mounted path. Unlike Azure's --az-cli-auth (which
+            # needed the `az` binary itself, not present in the container --
+            # see the Azure branch below and CLAUDE.md), google-auth resolves
+            # Application Default Credentials in pure Python (HTTP calls to
+            # GitHub's OIDC endpoint + GCP's STS API), no CLI shell-out.
+            #
+            # Confirmed for real on 2026-09-08: the config file lands on the
+            # runner owned/readable only by the runner's own user, same
+            # PermissionError class as the reports/ bind mount above --
+            # chmod before mounting. With that one fix, a real scan against
+            # a real GCP project completed successfully -- no second issue
+            # showed up, so ACTIONS_ID_TOKEN_REQUEST_TOKEN/_URL being passed
+            # through turned out unnecessary in practice, just harmless to
+            # leave in (see CLAUDE.md Status).
+            chmod 644 "$GOOGLE_APPLICATION_CREDENTIALS"
+            docker run --rm \
+              -e GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-adc.json \
+              -e ACTIONS_ID_TOKEN_REQUEST_TOKEN -e ACTIONS_ID_TOKEN_REQUEST_URL \
+              -v "$GOOGLE_APPLICATION_CREDENTIALS:/tmp/gcp-adc.json:ro" \
+              -v "$PWD/reports:/output" \
+              prowlercloud/prowler:latest gcp \
+              --project-ids "${{ vars.GCP_PROJECT_ID }}" \
+              --output-modes json-ocsf --output-directory /output --output-filename gcp-findings || true
+          else
+            # Confirmed for real on 2026-09-08: --az-cli-auth needs the
+            # actual `az` binary reachable wherever Prowler runs -- mounting
+            # $HOME/.azure into the container isn't enough, because the
+            # azure-identity SDK's AzureCliCredential shells out to `az
+            # account get-access-token` rather than reading the token cache
+            # itself, and the prowlercloud/prowler image doesn't ship the CLI.
+            # --sp-env-auth doesn't help either: this identity is OIDC/
+            # federated-credential-based (no client secret by design -- see
+            # CLAUDE.md), and this Prowler version's EnvironmentCredential
+            # only supports secret/certificate/username-password, not a
+            # federated token file. Simplest fix that keeps the no-secret
+            # design: run Prowler natively on the runner instead of in
+            # Docker for this leg -- ubuntu-latest ships `az` already, and
+            # azure/login above already logged the runner's own CLI session
+            # in via OIDC, so --az-cli-auth just works here with zero extra
+            # credential plumbing.
+            python3 -m venv /tmp/prowler-venv
+            /tmp/prowler-venv/bin/pip install --quiet prowler-cloud
+            /tmp/prowler-venv/bin/prowler azure --az-cli-auth \
+              --subscription-id "${{ vars.AZURE_SUBSCRIPTION_ID }}" \
+              --output-modes json-ocsf --output-directory reports --output-filename azure-findings || true
+          fi
+          mv reports/${{ matrix.cloud }}-findings.ocsf.json reports/${{ matrix.cloud }}-findings.json
+
+      - name: Use sample data
+        if: ${{ inputs.use_sample_data != false }}
+        run: |
+          mkdir -p reports
+          cp sample-data/prowler-${{ matrix.cloud }}-sample.json reports/${{ matrix.cloud }}-findings.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: findings-${{ matrix.cloud }}
+          path: reports/${{ matrix.cloud }}-findings.json
+
+  build-report:
+    needs: scan
+    # fail-fast: false on `scan` keeps one cloud's failed leg from cancelling
+    # the other, but `needs: scan` still treats the whole matrix job as
+    # failed if any leg failed -- without this, build-report gets skipped
+    # entirely even when e.g. only Azure isn't set up yet and AWS produced
+    # real findings worth reporting on. !cancelled() runs on any leg outcome
+    # except an actual cancellation.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: findings-*
+          path: reports
+          merge-multiple: true
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r scripts/requirements.txt
+
+      # Separate job/runner from `scan`, so it needs its own credentials for
+      # whichever cloud serves link delivery (the AI summary itself needs no
+      # cloud credentials at all -- see "Start local llamafile server"
+      # below). Read-only + scoped grants only (see infra/aws, infra/azure)
+      # -- never broad access -- and the publish step below is skipped
+      # entirely if no storage backend variable is set.
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        if: ${{ vars.AWS_ROLE_ARN != '' && (vars.STORAGE_BACKEND == 's3' || vars.STORAGE_BACKEND == '') }}
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        if: ${{ vars.AZURE_CLIENT_ID != '' && vars.STORAGE_BACKEND == 'azure-blob' }}
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        if: ${{ vars.GCP_SERVICE_ACCOUNT_EMAIL != '' && vars.STORAGE_BACKEND == 'gcs' }}
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Normalize findings
+        run: |
+          # A cloud whose scan leg failed/isn't set up yet never uploaded its
+          # findings artifact -- normalize_findings.py already accepts any
+          # number of input files, so just pass whichever ones landed.
+          files=""
+          [ -f reports/aws-findings.json ] && files="$files reports/aws-findings.json"
+          [ -f reports/azure-findings.json ] && files="$files reports/azure-findings.json"
+          [ -f reports/gcp-findings.json ] && files="$files reports/gcp-findings.json"
+          if [ -z "$files" ]; then
+            echo "::error::No findings from any cloud -- all scan legs must have failed."
+            exit 1
+          fi
+          python scripts/normalize_findings.py $files > reports/findings.normalized.json
+
+      # Reads the "latest" pointer that the previous run's Publish step wrote
+      # (see storage_backend.py / publish_reports.py) so generate_report.py
+      # can show what changed since last time. Silently produces no file if
+      # this is the first scan ever, or if no storage backend is configured
+      # at all -- generate_report.py treats a missing file as "no trend yet."
+      - name: Fetch previous scan (for trend)
+        if: ${{ vars.S3_REPORTS_BUCKET != '' || vars.AZURE_STORAGE_ACCOUNT != '' || vars.GCS_REPORTS_BUCKET != '' }}
+        env:
+          STORAGE_BACKEND: ${{ vars.STORAGE_BACKEND || 's3' }}
+          S3_REPORTS_BUCKET: ${{ vars.S3_REPORTS_BUCKET }}
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_STORAGE_CONTAINER: ${{ vars.AZURE_STORAGE_CONTAINER }}
+          GCS_REPORTS_BUCKET: ${{ vars.GCS_REPORTS_BUCKET }}
+          GCP_SERVICE_ACCOUNT_EMAIL: ${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}
+        run: |
+          python scripts/fetch_previous_scan.py reports/findings.previous.json
+
+      # The AI narrative runs entirely on this runner via
+      # https://github.com/Mozilla-Ocho/llamafile -- no cloud API, no
+      # third-party account, real findings never leave the runner. Chosen at
+      # the user's explicit request over any "free" hosted API (Groq,
+      # GitHub Models, etc): those are still a third party seeing real
+      # vulnerability data, which is a bigger concern than the weaker prose
+      # quality of a 3B model. Llama-3.2-3B-Instruct, Q4_K_M quantization
+      # (2.33 GB -- smallest of the published quantizations, confirmed
+      # available 2026-09-08 at the URL below); -ngl 0 forces CPU-only since
+      # GitHub-hosted runners have no GPU, avoiding a slow/failed GPU probe.
+      - name: Start local llamafile server
+        run: |
+          curl -sL -o /tmp/model.llamafile \
+            "https://huggingface.co/mozilla-ai/Llama-3.2-3B-Instruct-llamafile/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.llamafile"
+          chmod +x /tmp/model.llamafile
+          /tmp/model.llamafile --server --nobrowser --host 127.0.0.1 --port 8080 -ngl 0 &
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8080/health && break
+            sleep 2
+          done
+
+      - name: Generate report
+        # Report generation degrades to a templated (non-AI) summary if the
+        # llamafile call fails for any reason -- never fails the report.
+        run: |
+          if [ -f reports/findings.previous.json ]; then
+            python scripts/generate_report.py reports/findings.normalized.json reports/ --previous reports/findings.previous.json
+          else
+            python scripts/generate_report.py reports/findings.normalized.json reports/
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: security-reports
+          path: reports/report-*.html
+
+      # This is the actual delivery mechanism -- the 3 reports are otherwise
+      # only reachable as a workflow artifact. The `if` below is a practical
+      # guard (publish_reports.py needs somewhere to publish to), not a sign
+      # this step is skippable in a real setup: run infra/aws, infra/azure,
+      # or infra/gcp and set the matching variables before relying on this
+      # workflow.
+      - name: Publish reports
+        if: ${{ vars.S3_REPORTS_BUCKET != '' || vars.AZURE_STORAGE_ACCOUNT != '' || vars.GCS_REPORTS_BUCKET != '' }}
+        env:
+          # S3, Blob, or GCS -- same 3 report links either way, just a
+          # different private backend. Defaults to s3; set
+          # STORAGE_BACKEND=azure-blob or gcs to use the other two.
+          STORAGE_BACKEND: ${{ vars.STORAGE_BACKEND || 's3' }}
+          S3_REPORTS_BUCKET: ${{ vars.S3_REPORTS_BUCKET }}
+          AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+          AZURE_STORAGE_CONTAINER: ${{ vars.AZURE_STORAGE_CONTAINER }}
+          GCS_REPORTS_BUCKET: ${{ vars.GCS_REPORTS_BUCKET }}
+          GCP_SERVICE_ACCOUNT_EMAIL: ${{ vars.GCP_SERVICE_ACCOUNT_EMAIL }}
+          REPORT_URL_EXPIRY_SECONDS: ${{ vars.REPORT_URL_EXPIRY_SECONDS }}
+        run: |
+          python scripts/publish_reports.py reports/ "${{ github.run_id }}"
+
+      - name: Post to Slack (optional)
+        if: ${{ vars.SLACK_WEBHOOK_URL != '' }}
+        run: |
+          curl -sf -X POST -H 'Content-type: application/json' \
+            --data "{\"text\": \"Multi-cloud scan finished: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"}" \
+            "${{ vars.SLACK_WEBHOOK_URL }}"

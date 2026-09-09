@@ -1,0 +1,12 @@
+reports/
+!sample-data/*.json
+__pycache__/
+*.pyc
+.env
+
+# Terraform (infra/aws, infra/azure)
+# .terraform.lock.hcl is tracked intentionally (provider version reproducibility)
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars

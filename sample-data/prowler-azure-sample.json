@@ -1,0 +1,68 @@
+[
+  {
+    "cloud": {"provider": "azure", "region": "eastus", "account": {"uid": "sub-networking-0a314178"}},
+    "finding_info": {"title": "Ensure Storage Account blob public access is disabled", "analytic": {"uid": "storage_blob_public_access_disabled", "category": "storage"}},
+    "status_code": "FAIL",
+    "status_detail": "Storage account stprodinvoices allows public access to blob containers.",
+    "severity": "Critical",
+    "resources": [{"type": "AzureStorageAccount", "uid": "stprodinvoices"}],
+    "risk_details": "Publicly accessible blobs can leak invoices/customer files to anyone with the URL.",
+    "remediation": {"desc": "Set 'Allow Blob public access' to Disabled at the storage account level."},
+    "unmapped": {"compliance": {"CIS-Azure-2.0": ["3.7"], "PCI-DSS-4.0": ["1.4.2"]}}
+  },
+  {
+    "cloud": {"provider": "azure", "region": "eastus", "account": {"uid": "sub-networking-0a314178"}},
+    "finding_info": {"title": "Ensure no NSG allows RDP/SSH ingress from any source", "analytic": {"uid": "nsg_ssh_rdp_open_to_internet", "category": "network"}},
+    "status_code": "FAIL",
+    "status_detail": "NSG nsg-app allows inbound RDP (3389) from Any (0.0.0.0/0).",
+    "severity": "High",
+    "resources": [{"type": "AzureNetworkSecurityGroup", "uid": "nsg-app"}],
+    "risk_details": "Open RDP to the internet is a common ransomware entry point.",
+    "remediation": {"desc": "Restrict RDP/SSH rules to specific IP ranges or require a bastion/VPN."},
+    "unmapped": {"compliance": {"CIS-Azure-2.0": ["6.2"]}}
+  },
+  {
+    "cloud": {"provider": "azure", "region": "eastus", "account": {"uid": "sub-networking-0a314178"}},
+    "finding_info": {"title": "Ensure Key Vault purge protection is enabled", "analytic": {"uid": "keyvault_purge_protection_enabled", "category": "keyvault"}},
+    "status_code": "FAIL",
+    "status_detail": "Key Vault kv-ha-vnet-demo has purge protection disabled.",
+    "severity": "Medium",
+    "resources": [{"type": "AzureKeyVault", "uid": "kv-ha-vnet-demo"}],
+    "risk_details": "Without purge protection, a compromised admin could permanently delete secrets/keys before recovery.",
+    "remediation": {"desc": "Enable purge protection on the Key Vault (cannot be reversed once set, in a good way)."},
+    "unmapped": {"compliance": {"CIS-Azure-2.0": ["8.5"]}}
+  },
+  {
+    "cloud": {"provider": "azure", "region": "eastus", "account": {"uid": "sub-networking-0a314178"}},
+    "finding_info": {"title": "Ensure MFA is enabled for all privileged (admin) accounts", "analytic": {"uid": "aad_mfa_enabled_for_admins", "category": "entra-id"}},
+    "status_code": "FAIL",
+    "status_detail": "2 of 3 Global Administrator accounts do not have MFA enforced.",
+    "severity": "Critical",
+    "resources": [{"type": "AzureAadUser", "uid": "global-admins"}],
+    "risk_details": "Admin accounts without MFA are the highest-value target for credential-based takeover of the whole tenant.",
+    "remediation": {"desc": "Enforce MFA via Conditional Access for all Global Administrator roles."},
+    "unmapped": {"compliance": {"CIS-Azure-2.0": ["1.1.1"]}}
+  },
+  {
+    "cloud": {"provider": "azure", "region": "eastus", "account": {"uid": "sub-networking-0a314178"}},
+    "finding_info": {"title": "Ensure an activity log alert exists for policy assignment changes", "analytic": {"uid": "activity_log_alert_configured", "category": "monitor"}},
+    "status_code": "PASS",
+    "status_detail": "Activity log alert 'policy-change-alert' is configured and enabled.",
+    "severity": "Low",
+    "resources": [{"type": "AzureMonitorActivityLogAlert", "uid": "policy-change-alert"}],
+    "risk_details": "N/A - control is satisfied.",
+    "remediation": {"desc": "N/A"},
+    "unmapped": {"compliance": {"CIS-Azure-2.0": ["5.2.1"]}}
+  },
+  {
+    "cloud": {"provider": "azure", "region": "eastus", "account": {"uid": "sub-networking-0a314178"}},
+    "finding_info": {"title": "Ensure NSG Flow Logs are enabled", "analytic": {"uid": "vnet_flow_logs_enabled", "category": "network"}},
+    "status_code": "PASS",
+    "status_detail": "Flow Logs are enabled on all NSGs in vnet-ha-demo with Traffic Analytics.",
+    "severity": "Medium",
+    "resources": [{"type": "AzureNetworkWatcherFlowLog", "uid": "vnet-ha-demo"}],
+    "risk_details": "N/A - control is satisfied.",
+    "remediation": {"desc": "N/A"},
+    "unmapped": {"compliance": {"CIS-Azure-2.0": ["6.5"]}}
+  }
+]

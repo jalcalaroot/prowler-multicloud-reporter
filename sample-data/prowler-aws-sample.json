@@ -1,0 +1,79 @@
+[
+  {
+    "cloud": {"provider": "aws", "region": "us-east-1", "account": {"uid": "111122223333"}},
+    "finding_info": {"title": "Check if S3 buckets have public access", "analytic": {"uid": "s3_bucket_public_access", "category": "s3"}},
+    "status_code": "FAIL",
+    "status_detail": "S3 Bucket customer-uploads-prod has public read access enabled via bucket policy.",
+    "severity": "Critical",
+    "resources": [{"type": "AwsS3Bucket", "uid": "customer-uploads-prod"}],
+    "risk_details": "Publicly readable storage can expose customer data to anyone on the internet.",
+    "remediation": {"desc": "Block public access at the bucket and account level; scope access via IAM/bucket policy instead."},
+    "unmapped": {"compliance": {"CIS-1.4": ["2.1.5"], "PCI-DSS-4.0": ["1.4.2"]}}
+  },
+  {
+    "cloud": {"provider": "aws", "region": "us-east-1", "account": {"uid": "111122223333"}},
+    "finding_info": {"title": "Ensure MFA is enabled for the root account", "analytic": {"uid": "iam_root_mfa_enabled", "category": "iam"}},
+    "status_code": "FAIL",
+    "status_detail": "Root account does not have MFA enabled.",
+    "severity": "Critical",
+    "resources": [{"type": "AwsIamUser", "uid": "root"}],
+    "risk_details": "Root account compromise without MFA gives an attacker unrestricted control of the AWS account.",
+    "remediation": {"desc": "Enable a hardware or virtual MFA device on the root account immediately."},
+    "unmapped": {"compliance": {"CIS-1.4": ["1.5"], "NIST-800-53": ["IA-2"]}}
+  },
+  {
+    "cloud": {"provider": "aws", "region": "us-east-1", "account": {"uid": "111122223333"}},
+    "finding_info": {"title": "Ensure no security groups allow ingress from 0.0.0.0/0 to port 22", "analytic": {"uid": "ec2_securitygroup_allow_ingress_from_internet_to_ssh", "category": "ec2"}},
+    "status_code": "FAIL",
+    "status_detail": "Security group sg-0a1b2c3d (bastion-sg) allows SSH (port 22) from 0.0.0.0/0.",
+    "severity": "High",
+    "resources": [{"type": "AwsEc2SecurityGroup", "uid": "sg-0a1b2c3d"}],
+    "risk_details": "Open SSH to the internet is a primary vector for brute-force and credential-stuffing attacks.",
+    "remediation": {"desc": "Restrict SSH ingress to known IP ranges or a bastion/VPN, never 0.0.0.0/0."},
+    "unmapped": {"compliance": {"CIS-1.4": ["5.2"]}}
+  },
+  {
+    "cloud": {"provider": "aws", "region": "us-east-1", "account": {"uid": "111122223333"}},
+    "finding_info": {"title": "Ensure CloudTrail is enabled in all regions", "analytic": {"uid": "cloudtrail_multi_region_enabled", "category": "cloudtrail"}},
+    "status_code": "PASS",
+    "status_detail": "CloudTrail trail 'org-trail' is multi-region and logging.",
+    "severity": "High",
+    "resources": [{"type": "AwsCloudTrailTrail", "uid": "org-trail"}],
+    "risk_details": "N/A - control is satisfied.",
+    "remediation": {"desc": "N/A"},
+    "unmapped": {"compliance": {"CIS-1.4": ["3.1"]}}
+  },
+  {
+    "cloud": {"provider": "aws", "region": "us-east-1", "account": {"uid": "111122223333"}},
+    "finding_info": {"title": "Ensure RDS instances have automated backups enabled", "analytic": {"uid": "rds_instance_backup_enabled", "category": "rds"}},
+    "status_code": "FAIL",
+    "status_detail": "RDS instance prod-orders-db has automated backups disabled (retention period 0).",
+    "severity": "Medium",
+    "resources": [{"type": "AwsRdsDbInstance", "uid": "prod-orders-db"}],
+    "risk_details": "No automated backups means data loss risk on instance failure or accidental deletion.",
+    "remediation": {"desc": "Set backup retention period to at least 7 days."},
+    "unmapped": {"compliance": {"CIS-1.4": ["2.3.2"]}}
+  },
+  {
+    "cloud": {"provider": "aws", "region": "us-east-1", "account": {"uid": "111122223333"}},
+    "finding_info": {"title": "Ensure IAM password policy requires an uppercase letter", "analytic": {"uid": "iam_password_policy_uppercase", "category": "iam"}},
+    "status_code": "FAIL",
+    "status_detail": "Account password policy does not require an uppercase character.",
+    "severity": "Low",
+    "resources": [{"type": "AwsIamAccountPasswordPolicy", "uid": "password-policy"}],
+    "risk_details": "Weaker password policy increases the odds of a guessable IAM user password.",
+    "remediation": {"desc": "Update the account password policy to require uppercase, lowercase, number and symbol."},
+    "unmapped": {"compliance": {"CIS-1.4": ["1.8"]}}
+  },
+  {
+    "cloud": {"provider": "aws", "region": "us-east-1", "account": {"uid": "111122223333"}},
+    "finding_info": {"title": "Ensure VPC flow logging is enabled in all VPCs", "analytic": {"uid": "vpc_flow_logs_enabled", "category": "vpc"}},
+    "status_code": "PASS",
+    "status_detail": "VPC vpc-0a1b2c3d has flow logs enabled to CloudWatch Logs.",
+    "severity": "Medium",
+    "resources": [{"type": "AwsEc2Vpc", "uid": "vpc-0a1b2c3d"}],
+    "risk_details": "N/A - control is satisfied.",
+    "remediation": {"desc": "N/A"},
+    "unmapped": {"compliance": {"CIS-1.4": ["3.9"]}}
+  }
+]
