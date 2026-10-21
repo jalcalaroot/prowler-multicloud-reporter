@@ -33,7 +33,7 @@ jobs:
       # ViewOnlyAccess -- never AdministratorAccess). Set the AWS_ROLE_ARN
       # repo variable to its `role_arn` output (see infra/aws/README.md) to
       # enable this.
-      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: ${{ inputs.use_sample_data == false && matrix.cloud == 'aws' }}
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
@@ -183,7 +183,7 @@ jobs:
       # below). Read-only + scoped grants only (see infra/aws, infra/azure)
       # -- never broad access -- and the publish step below is skipped
       # entirely if no storage backend variable is set.
-      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: ${{ vars.AWS_ROLE_ARN != '' && (vars.STORAGE_BACKEND == 's3' || vars.STORAGE_BACKEND == '') }}
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
